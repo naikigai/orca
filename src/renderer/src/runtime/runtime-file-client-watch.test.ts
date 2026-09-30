@@ -132,6 +132,30 @@ describe('runtime file client', () => {
     })
   })
 
+  it('reports an unexpected stream close to mounted watch listeners', async () => {
+    const onError = vi.fn()
+    let onClose: (() => void) | undefined
+    runtimeEnvironmentSubscribe.mockImplementation((_args, callbacks) => {
+      onClose = callbacks.onClose
+      return Promise.resolve({ unsubscribe: vi.fn(), sendBinary: vi.fn() })
+    })
+
+    await subscribeRuntimeFileChanges(
+      {
+        settings: { activeRuntimeEnvironmentId: 'env-1' },
+        worktreeId: 'wt-1',
+        worktreePath: '/remote/repo'
+      },
+      vi.fn(),
+      onError
+    )
+    onClose?.()
+
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Runtime file watch closed' })
+    )
+  })
+
   it('evicts a terminal watch before notifying error listeners that retry', async () => {
     const callbacks: {
       onResponse: (response: unknown) => void

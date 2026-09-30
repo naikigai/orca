@@ -71,6 +71,36 @@ export function getFileExplorerWatchRuntimeEnvironmentId(
       : null
 }
 
+function createRuntimeFileWatchRetry(subscribe: () => void): {
+  schedule: () => void
+  reset: () => void
+  cancel: () => void
+} {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  let delayMs = 1_000
+  return {
+    schedule: () => {
+      if (timer !== null) {
+        return
+      }
+      timer = setTimeout(() => {
+        timer = null
+        subscribe()
+      }, delayMs)
+      delayMs = Math.min(delayMs * 2, 30_000)
+    },
+    reset: () => {
+      delayMs = 1_000
+    },
+    cancel: () => {
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+  }
+}
+
 /**
  * Reconciles File Explorer state on filesystem events for the active worktree.
  *
@@ -222,44 +252,64 @@ export function useFileExplorerWatch({
     }
 
     let unsubscribeListener: (() => void) | null = null
+    let cancelRetry: (() => void) | null = null
     if (activeRuntimeEnvironmentId?.trim() && activeWorktreeId) {
       // Why: remote runtime watch events don't enter the local Electron fs:changed bus, so subscribe directly.
-      void subscribeRuntimeFileChanges(
-        {
-          settings: { activeRuntimeEnvironmentId },
+      let reconnecting = false
+      const subscribe = (): void => {
+        let failed = false
+        void subscribeRuntimeFileChanges(
+          {
+            settings: { activeRuntimeEnvironmentId },
+            worktreeId: activeWorktreeId,
+            worktreePath,
+            connectionId: undefined
+          },
+          handleFsChanged,
+          (err) => {
+            failed = true
+            scheduleRetry(err)
+          }
+        )
+          .then((unsubscribe) => {
+            if (disposed || failed) {
+              unsubscribe()
+              return
+            }
+            unsubscribeListener = unsubscribe
+            retry.reset()
+            if (reconnecting) {
+              scheduler.requestFullRefresh()
+            }
+          })
+          .catch((err) => {
+            failed = true
+            scheduleRetry(err)
+          })
+      }
+      const retry = createRuntimeFileWatchRetry(subscribe)
+      cancelRetry = retry.cancel
+      const scheduleRetry = (err: unknown): void => {
+        if (disposed) {
+          return
+        }
+        unsubscribeListener = null
+        reconnecting = true
+        console.warn('[filesystem-watch] failed to subscribe to runtime file changes', {
           worktreeId: activeWorktreeId,
           worktreePath,
-          connectionId: undefined
-        },
-        handleFsChanged,
-        (err) => {
-          console.warn('[filesystem-watch] failed to subscribe to runtime file changes', {
-            worktreeId: activeWorktreeId,
-            worktreePath,
-            error: err.message
-          })
-        }
-      )
-        .then((unsubscribe) => {
-          if (disposed) {
-            unsubscribe()
-            return
-          }
-          unsubscribeListener = unsubscribe
+          error: err instanceof Error ? err.message : String(err)
         })
-        .catch((err) => {
-          console.warn('[filesystem-watch] failed to subscribe to runtime file changes', {
-            worktreeId: activeWorktreeId,
-            worktreePath,
-            error: err instanceof Error ? err.message : String(err)
-          })
-        })
+        retry.schedule()
+      }
+      subscribe()
     } else {
       unsubscribeListener = window.api.fs.onFsChanged(handleFsChanged)
     }
 
     return () => {
       disposed = true
+      cancelRetry?.()
       unsubscribeListener?.()
       if (activeResyncByWatchKey.get(currentWatchKey) === scheduler.requestFullRefresh) {
         activeResyncByWatchKey.delete(currentWatchKey)

@@ -116,11 +116,9 @@ function createSharedRuntimeFileWatch(
           failSharedRuntimeFileWatch(key, shared, new Error(error.message))
         },
         onClose: () => {
-          if (sharedRuntimeFileWatches.get(key) === shared) {
-            sharedRuntimeFileWatches.delete(key)
+          if (!shared.closed) {
+            failSharedRuntimeFileWatch(key, shared, new Error('Runtime file watch closed'))
           }
-          shared.closed = true
-          shared.unsubscribe = null
         }
       }
     )
@@ -169,17 +167,7 @@ function handleSharedRuntimeFileWatchResponse(
       // before callbacks run so the retry cannot join a stream awaiting `end`.
       failSharedRuntimeFileWatch(key, shared, new Error(event.message))
     } else if (event.type === 'end') {
-      // Why: shared-control completes without onClose; evict and release its
-      // transport handle so later listeners start cleanly without retained state.
-      if (sharedRuntimeFileWatches.get(key) === shared) {
-        sharedRuntimeFileWatches.delete(key)
-      }
-      shared.closed = true
-      const unsubscribe = shared.unsubscribe
-      shared.unsubscribe = null
-      shared.remoteSubscriptionId = null
-      shared.listeners.clear()
-      unsubscribe?.()
+      failSharedRuntimeFileWatch(key, shared, new Error('Runtime file watch ended'))
     }
   } catch (err) {
     failSharedRuntimeFileWatch(key, shared, err instanceof Error ? err : new Error(String(err)))

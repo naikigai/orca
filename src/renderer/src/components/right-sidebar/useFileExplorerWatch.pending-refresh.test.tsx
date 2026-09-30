@@ -9,8 +9,13 @@ import type {
 } from './file-explorer-types'
 
 const ownerRef = vi.hoisted(() => ({ current: { kind: 'local' } as FileExplorerOperationOwner }))
-const runtimeWatch = vi.hoisted(() => ({
-  handler: null as ((payload: FsChangedPayload) => void) | null,
+const runtimeWatch: {
+  handler: ((payload: FsChangedPayload) => void) | null
+  onError: ((error: Error) => void) | null
+  subscribe: ReturnType<typeof vi.fn>
+} = vi.hoisted(() => ({
+  handler: null,
+  onError: null,
   subscribe: vi.fn()
 }))
 
@@ -41,10 +46,16 @@ describe('useFileExplorerWatch pending refreshes', () => {
     ownerRef.current = { kind: 'local' }
     mainWatchHandler = null
     runtimeWatch.handler = null
+    runtimeWatch.onError = null
     runtimeWatch.subscribe.mockReset()
     runtimeWatch.subscribe.mockImplementation(
-      async (_context: unknown, handler: WatchHandler): Promise<() => void> => {
+      async (
+        _context: unknown,
+        handler: WatchHandler,
+        onError: (error: Error) => void
+      ): Promise<() => void> => {
         runtimeWatch.handler = handler
+        runtimeWatch.onError = onError
         return () => undefined
       }
     )
